@@ -1,0 +1,76 @@
+# First, we setup the experiment (thought). A pi meson splits into electron and positron thrown into two opposite directions.
+# Each one of them passed through a S-G apparatus and are measured for their spin orientation. (Charge effects are neglected)
+# The positron is measured first along z direction, and the electron is measured second along three different axes, 120/240/0 deg away. (hexagonal axes)
+# What is the probability of finding both the spins to be of same sign? This must be clearly non-zero for the cases where the second measurement is along a different axes.
+
+# Interestingly, this probability value is different for deterministic approach and probabilistic approach.
+# For deterministic approach, we find there are 8 different states of the two spins possible with 9 different options for axes selection.
+# In a state, there are 4 cases of measuring same polarity and 5 ways of choosing axes measuring opposite polarities.
+# Thus, the probability of finding same signs for both spins is less than 4/9. (Include the same axis measurement case where there are zero possibilities of same polarity)
+
+# In the case of probabilistic approach, we must work out Dirac physics and we arrive at the result of probability = 0.5.
+# The initial state of the spin pair is in a superposition of up and down along some arbitrary axis.
+# Measurement of positron fixes one axis. The other spin-measurement is done after applying a rotation operator Ry(angle).
+# In Qiskit, we apply a series of gates on the initial qubit |0> to reach our superposition state: 
+#CNOT(0,1)H(0)X(0)X(1)|0>|0>
+#where 0 and 1 represents the qubit representing positron and electron respectively.
+
+# Loading certain essential libraries for preparing a quantum cricuit simulation and
+# for calculating and visualizing the results
+
+from qiskit import *
+from qiskit.visualization import plot_histogram
+from numpy import pi
+
+# Need to create three copies of quantum circuits corresponding to three cases of choosing axes for electron measurements.
+qcs = [QuantumCircuit(2,2), QuantumCircuit(2,2),QuantumCircuit(2,2)]
+
+for i in range(0, len(qcs)):
+    qcs[i].x(0)
+    qcs[i].x(1)
+    qcs[i].h(0)
+    qcs[i].cx(0, 1)
+
+qcs[0].ry(-2*pi/3, 1)
+qcs[1].ry(-4*pi/3, 1)
+qcs[2].ry(-2*pi/3, 1)
+qcs[2].ry(-4*pi/3, 1)
+
+for i in range(0, len(qcs)):
+    qcs[i].barrier()
+    qcs[i].measure([0,1], [0,1])
+
+qcs[1].draw('mpl')
+
+# We need to calculate the outcomes statistics
+# For that we use a feature called sampler in qiskit
+
+from qiskit.primitives import StatevectorSampler
+sampler = StatevectorSampler()
+
+count_list = [None]* len(qcs)       # Define an array to contain the counts values for the three circuits
+for i in range(0, len(qcs)):
+    pub = (qcs[i])
+    job = sampler.run([pub], shots=10000)
+    result = job.result()
+    data_pub = result[0].data
+    counts = data_pub.c.get_counts()
+    count_list[i] = counts
+
+plot_histogram(count_list)
+
+# Sum up the identical outcomes from different measurement axes cases
+outcomes = ('00', '01', '10', '11')
+
+# Update the values inside count_list marked as None into zeros for numerical handling.
+for i in range(0, len(qcs)):
+    for j in range(0, len(outcomes)):
+        if count_list[i].get(outcomes[j]) == None:
+            count_list[i].update({outcomes[j]:0})
+
+# Summing of the outcomes from differrent cases will be stored in a new dictionary.
+total_counts = {}
+for j in range(0, len(outcomes)):
+    total_counts[outcomes[j]] = sum(count_list[i].get(outcomes[j]) for i in range(0, len(qcs)))
+
+plot_histogram(total_counts)
