@@ -1,1 +1,213 @@
+# Import essential libraries
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
 
+# -----------------
+# Generate synthetic true data
+# -----------------
+
+# Physical parameters (assumed known in the real problem)
+m = 1.0 # mass
+k = 5.0 # spring constant
+
+# 'True' damping constant  --- we pretend we don't know this!
+c_true = 0.7
+
+# Define the classical ODE for data generation
+def damped_spring_mass(t, y):
+    """
+    Classical ODE for a damped spring-mass:
+    y = [x, x_dot]
+    dy/dt = [x_dot, x_ddot]
+    where x_ddot = -(c_true/m)*x_dot - (k/m)*x
+    """
+    x, x_dot = y
+    x_ddot = -(c_true/m)*x_dot - (k/m) * x
+    return [x_dot, x_ddot]
+
+# Initial conditions
+x0 = 1.0    # initial displacement
+v0 = 0.0    # initial velocity
+y0 = [x0, v0]
+
+# Time span for simulation
+t_start, t_end = 0.0, 10.0
+t_eval = np.linspace(t_start, t_end, 200)   # 200 time points
+
+# Solve the classical ODE
+sol = solve_ivp(damped_spring_mass, [t_start, t_end], y0, t_eval=t_eval)
+x_true = sol.y[0, :]    # x(t)
+v_true = sol.y[1, :]    # x_dot(t)
+
+# Add noise to simulate the experimental data
+noise_level = 0.1
+x_noisy = x_true + noise_level * np.random.randn(len(x_true))
+v_noisy = v_true + noise_level * np.random.randn(len(v_true))
+
+# Plot the noisy data vs. true solution
+plt.figure(figsize=(8,4))
+plt.plot(t_eval, x_true, label = 'Ideal $x(t)$')
+plt.plot(t_eval, x_noisy, 'o', label = 'Real $x(t)$ data with noise', alpha = 0.5, markersize = 3)
+plt.plot(t_eval, v_noisy, 'x', label = 'Real $\\dot{x}(t)$ with noise', alpha=0.5, markersize = 3)
+plt.title('Simulated data for a damped Spring-Mass system')
+plt.xlabel('Time [s]')
+plt.ylabel("Displacement [m]")
+plt.legend()
+plt.show()
+
+# Import necessary packages for Neural Network and numerical calculations.
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchdiffeq import odeint
+
+# A simple feed-forward NN that outputs a scalar.
+class DampeningNN(nn.Module):
+    """
+    A simple feed-forward neural network that takes:
+    - current displacement u1,
+    - current velocity u2,
+    - optionally time t,
+    and outputs an estimate of the 'damping force' (or part of it).
+    """
+    def __init__(self, input_dim =2, hidden_dim=16):
+        super(DampeningNN, self).__init__()
+
+        # You can include time as input (then input_dim =3)
+        # For simplicity, we only use (u1, u2) => input_dim = 2
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, t, u):
+        # u is (batch_size, 2) -> [x, x_dot]
+        # t is a scalar or shape (batch_size, )
+        # We'll just ignore t for now, or we could incorporate it
+        return self.net(u) 
+# Defining a class for the known physics part.
+class SpringMassUDE(nn.Module):
+    """
+    This class wraps the ODE:
+        du1/dt = u2
+        du2/dt = -(k/m) * u1 - (1/m) * NN(u1, u2)
+    """
+    def __init__(self, m, k, nn_model):
+        super(SpringMassUDE, self).__init__()
+        self.m = m
+        self.k = k
+        self.nn_model = nn_model    # the neural network for damping
+
+    def forward(self, t, y):
+        """
+        y: [u1, u2]
+        returns dy/dt
+        """
+        # For batch ODE solving, y might have shape (batch_size, 2).
+        # Usually for a single trajectory, batch_size = 1.
+        u1, u2 = y[..., 0], y[..., 1]
+
+        # Reshape or combine for feeding the NN
+        u_cat = torch.stack([u1, u2], dim=-1)
+
+        # Damping force from NN
+        damp_force = self.nn_model(t, u_cat)
+        damp_force = damp_force.squeeze(dim=-1)     # shape (batch_size, )
+
+        # The ODE:
+        du1dt = u2
+        du2dt = -(self.k / self.m) * u1 - (1.0 / self.m) * damp_force
+
+        return torch.stack([du1dt, du2dt], dim=-1)
+# Convert numpy data to PyTorch tensors
+t_train_torch = torch.tensor(t_eval, dtype=torch.float32)   # shape (N,)
+x_train_torch = torch.tensor(x_noisy, dtype=torch.float32)  # shape (N, )
+v_train_torch = torch.tensor(v_noisy, dtype=torch.float32)  # shape (N, )
+
+print("Time tensor shape:", t_train_torch.shape)
+print("Displacement tensor shape:", x_train_noisy.shape)
+print("Velocity tensor shape:", v_train_noisy.shape)
+
+# Helper funtion that returns a solution for given timepoints.
+def forward_sim(net_ode, y0, t_points):
+    """
+    net_ode: an instance of SpringMassUDE
+    y0: initial condition, shape(2, )
+    t_points: 1D tensor of time points at which we want the solution
+    returns: solution at those time points, shape (len(t_points), 2)
+    """
+    y0_torch = y0.unsqueeze(0)  # shape(1, 2) for batch dimension
+    sol = odeint(net_ode, y0_torch, t_points, method = 'rk4')
+    # sol shape is (len(t_points), batch_size=1,2)
+    return sol[:, 0, :]     # remove batch dimension -> shape = (len(t_points), 2)
+
+# Instantiate NN and UDE class
+# Choose dimensions
+hidden_dim = 16
+damping_nn = DampeningNN(input_dim=2, hidden_dim=hidden_dim)
+ude = SpringMassUDE(m=m, k=k, nn_model=damping_nn)
+
+# Initial condition for training (use the noisy data's first point)
+y0_torch = torch.tensor([x_noisy[0], v_noisy[0]], dtype=torch.float32)
+
+# Optimizer 
+optimizer = optim.Adam(ude.parameters(), lr = 1e-2)
+
+print("Neural Network model:")
+print(damping_nn)
+
+print("\nUDE parameters:")
+for name, param in ude.named_parameters():
+    print(name, param.shape)
+
+# Training loop
+num_epochs = 100
+loss_history = []
+print_interval = 1
+
+for epoch in range(num_epochs):
+    optimizer.zero_grad()
+
+    # Forward simulation from t_start to t_end
+    sol_pred = forward_sim(ude, y0_torch, t_train_torch)
+    # sol_pred_shape = (N, 2), where N = len(t_eval)
+    x_pred = sol_pred[:, 0]
+    v_pred = sol_pred[:, 1]
+
+    # Define a loss: MSE on displacement (and optionally velocity)
+    loss_x = torch.mean((x_pred - x_train_torch)**2)
+    loss_v = torch.mean((v_pred - v_train_torch)**2)
+    # Weighted sum or just x
+    loss = 0.5 * loss_x + 0.5 * loss_v
+
+    # Backprop
+    loss.backward()
+    optimizer.step()
+
+    # Store the loss for plotting
+    loss_history.append(loss.item())
+
+    if (epoch+1) % print_interval==0:
+        print(f"Epoch {epoch + 1} / {num_epochs}, Loss = {loss.item():.6f}")
+
+# Plotting epoch vs Loss
+plt.figure(figsize=(6, 4))
+plt.plot(range(1, num_epochs+1), loss_history, marker = 'o', label='Training Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Epoch vs Loss')
+plt.legend()
+plt.show()
+
+# Plotting epoch vs Loss
+plt.figure(figsize=(6, 4))
+plt.plot(range(1, num_epochs+1), loss_history, marker = 'o', label='Training Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Epoch vs Loss')
+plt.legend()
+plt.show()
